@@ -45,6 +45,7 @@ import org.jivesoftware.smack.filter.NotFilter;
 import org.jivesoftware.smack.filter.StanzaExtensionFilter;
 import org.jivesoftware.smack.filter.StanzaFilter;
 import org.jivesoftware.smack.filter.StanzaTypeFilter;
+import org.jivesoftware.smack.packet.ExtensionElement;
 import org.jivesoftware.smack.packet.Message;
 import org.jivesoftware.smack.packet.MessageBuilder;
 import org.jivesoftware.smack.packet.Stanza;
@@ -57,6 +58,7 @@ import org.jivesoftware.smackx.disco.packet.DiscoverInfo;
 import org.jivesoftware.smackx.disco.packet.DiscoverItems;
 import org.jivesoftware.smackx.muc.MultiUserChatException.MucNotJoinedException;
 import org.jivesoftware.smackx.muc.MultiUserChatException.NotAMucServiceException;
+import org.jivesoftware.smackx.muc.packet.GroupChatInvitation;
 import org.jivesoftware.smackx.muc.packet.MUCInitialPresence;
 import org.jivesoftware.smackx.muc.packet.MUCUser;
 
@@ -65,6 +67,7 @@ import org.jxmpp.jid.EntityBareJid;
 import org.jxmpp.jid.EntityFullJid;
 import org.jxmpp.jid.EntityJid;
 import org.jxmpp.jid.Jid;
+import org.jxmpp.jid.impl.JidCreate;
 import org.jxmpp.jid.parts.Resourcepart;
 import org.jxmpp.util.cache.ExpirationCache;
 
@@ -139,6 +142,11 @@ public final class MultiUserChatManager extends Manager {
     private static final StanzaFilter INVITATION_FILTER = new AndFilter(StanzaTypeFilter.MESSAGE, new StanzaExtensionFilter(new MUCUser()),
                     new NotFilter(MessageTypeFilter.ERROR));
 
+    private static final StanzaFilter XEP_0249_INVITATION_FILTER =
+        new AndFilter(StanzaTypeFilter.MESSAGE,
+                      new StanzaExtensionFilter(GroupChatInvitation.ELEMENT, GroupChatInvitation.NAMESPACE),
+                      new NotFilter(MessageTypeFilter.ERROR));
+
     private static final ExpirationCache<DomainBareJid, DiscoverInfo> KNOWN_MUC_SERVICES = new ExpirationCache<>(
         100, 1000 * 60 * 60 * 24);
 
@@ -178,7 +186,7 @@ public final class MultiUserChatManager extends Manager {
                 // Get the MUCUser extension
                 final MUCUser mucUser = MUCUser.from(message);
                 // Check if the MUCUser extension includes an invitation
-                if (mucUser.getInvite() != null) {
+                if (mucUser != null && mucUser.getInvite() != null) {
                     EntityBareJid mucJid = message.getFrom().asEntityBareJidIfPossible();
                     if (mucJid == null) {
                         LOGGER.warning("Invite to non bare JID: '" + message.toXML() + "'");
@@ -198,6 +206,8 @@ public final class MultiUserChatManager extends Manager {
             }
         };
         connection.addAsyncStanzaListener(invitationPacketListener, INVITATION_FILTER);
+
+        addXEP0249Listener(connection);
 
         connection.addConnectionListener(new ConnectionListener() {
             @Override
@@ -252,6 +262,44 @@ public final class MultiUserChatManager extends Manager {
                 });
             }
         });
+    }
+
+    private void addXEP0249Listener(XMPPConnection connection) {
+        // Listens for all messages that include a GroupChatInvitation extension and fire the invitation
+        // listeners
+        StanzaListener xep0249InvitationPacketListener = new StanzaListener() {
+            @Override
+            public void processStanza(Stanza packet) {
+                final Message message = (Message) packet;
+                ExtensionElement inviteExt =
+                    packet.getExtension(GroupChatInvitation.class);
+                GroupChatInvitation invite =
+                    inviteExt instanceof GroupChatInvitation ? (GroupChatInvitation) inviteExt : null;
+
+                if (invite != null && invite.getRoomAddress() != null) {
+                    EntityBareJid mucJid = JidCreate.entityBareFromOrNull(invite.getRoomAddress());
+                    if (mucJid == null) {
+                        LOGGER.warning("Invite to non bare JID: '" + message.toXML() + "'");
+                        return;
+                    }
+                    // Fire event for invitation listeners
+                    final MultiUserChat muc = getMultiUserChat(mucJid);
+                    final XMPPConnection connection = connection();
+                    final MUCUser.Invite mucInvite = null;
+                    final EntityJid from = message.getFrom().asEntityJidIfPossible();
+                    if (from == null) {
+                        LOGGER.warning("Group Chat Invitation from non entity JID: '" + message.toXML() + "'");
+                        return;
+                    }
+                    final String reason = null;
+                    final String password = null;
+                    for (final InvitationListener listener : invitationsListeners) {
+                        listener.invitationReceived(connection, muc, from, reason, password, message, mucInvite);
+                    }
+                }
+            }
+        };
+        connection.addAsyncStanzaListener(xep0249InvitationPacketListener, XEP_0249_INVITATION_FILTER);
     }
 
     /**

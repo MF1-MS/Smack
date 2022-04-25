@@ -22,6 +22,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CopyOnWriteArraySet;
@@ -71,6 +72,7 @@ import org.jivesoftware.smackx.muc.MultiUserChatException.MucNotJoinedException;
 import org.jivesoftware.smackx.muc.MultiUserChatException.NotAMucServiceException;
 import org.jivesoftware.smackx.muc.filter.MUCUserStatusCodeFilter;
 import org.jivesoftware.smackx.muc.packet.Destroy;
+import org.jivesoftware.smackx.muc.packet.GroupChatInvitation;
 import org.jivesoftware.smackx.muc.packet.MUCAdmin;
 import org.jivesoftware.smackx.muc.packet.MUCInitialPresence;
 import org.jivesoftware.smackx.muc.packet.MUCItem;
@@ -1059,6 +1061,30 @@ public class MultiUserChat {
         // Add the MUCUser packet that includes the invitation to the message
         messageBuilder.addExtension(mucUser);
 
+        Message message = messageBuilder.build();
+        connection.sendStanza(message);
+    }
+
+    /**
+     * Invites another user to the room in which one is an occupant. In contrast
+     * to the method "invite", the invitation is sent directly to the user rather
+     * than via the chat room.  This is useful when the user being invited is
+     * offline, as otherwise the invitation would be dropped.
+     *
+     * @param user the user to send the invitation to
+     * @throws NotConnectedException if the XMPP connection is not connected.
+     * @throws InterruptedException if the calling thread was interrupted.
+     */
+    public void inviteDirectly(EntityBareJid user) throws NotConnectedException, InterruptedException {
+        // TODO MF1 UUID?
+        MessageBuilder messageBuilder = MessageBuilder.buildMessage(UUID.randomUUID().toString());
+        messageBuilder.to(user);
+
+        // Add the extension for direct invitation
+        GroupChatInvitation invitationExt = new GroupChatInvitation(room.toString());
+        messageBuilder.addExtension(invitationExt);
+
+        // Send it
         Message message = messageBuilder.build();
         connection.sendStanza(message);
     }

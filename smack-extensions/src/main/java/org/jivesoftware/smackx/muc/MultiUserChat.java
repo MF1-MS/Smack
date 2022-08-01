@@ -1,6 +1,6 @@
 /**
  *
- * Copyright 2003-2007 Jive Software. 2020-2021 Florian Schmaus
+ * Copyright 2003-2007 Jive Software. 2020-2022 Florian Schmaus
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -60,7 +61,9 @@ import org.jivesoftware.smack.packet.Message;
 import org.jivesoftware.smack.packet.MessageBuilder;
 import org.jivesoftware.smack.packet.MessageView;
 import org.jivesoftware.smack.packet.Presence;
+import org.jivesoftware.smack.packet.PresenceBuilder;
 import org.jivesoftware.smack.packet.Stanza;
+import org.jivesoftware.smack.util.Consumer;
 import org.jivesoftware.smack.util.Objects;
 
 import org.jivesoftware.smackx.disco.ServiceDiscoveryManager;
@@ -126,7 +129,7 @@ public class MultiUserChat {
     private final Set<ParticipantStatusListener> participantStatusListeners = new CopyOnWriteArraySet<ParticipantStatusListener>();
     private final Set<MessageListener> messageListeners = new CopyOnWriteArraySet<MessageListener>();
     private final Set<PresenceListener> presenceListeners = new CopyOnWriteArraySet<PresenceListener>();
-    private final Set<PresenceListener> presenceInterceptors = new CopyOnWriteArraySet<PresenceListener>();
+    private final Set<Consumer<PresenceBuilder>> presenceInterceptors = new CopyOnWriteArraySet<>();
 
     /**
      * This filter will match all stanzas send from the groupchat or from one if
@@ -140,7 +143,16 @@ public class MultiUserChat {
      */
     private final StanzaFilter fromRoomGroupchatFilter;
 
-    private final StanzaListener presenceInterceptor;
+    private final AtomicInteger presenceInterceptorCount = new AtomicInteger();
+    // We want to save the presence interceptor in a variable, using a lambda, (and not use a method reference) to be
+    // able to dynamically add and remove it from the connection.
+    @SuppressWarnings("UnnecessaryLambda")
+    private final Consumer<PresenceBuilder> presenceInterceptor = presenceBuilder -> {
+        for (Consumer<PresenceBuilder> interceptor : presenceInterceptors) {
+            interceptor.accept(presenceBuilder);
+        }
+    };
+
     private final StanzaListener messageListener;
     private final StanzaListener presenceListener;
     private final StanzaListener subjectListener;
@@ -318,16 +330,6 @@ public class MultiUserChat {
                 fireInvitationRejectionListeners(message, rejection);
             }
         };
-
-        presenceInterceptor = new StanzaListener() {
-            @Override
-            public void processStanza(Stanza packet) {
-                Presence presence = (Presence) packet;
-                for (PresenceListener interceptor : presenceInterceptors) {
-                    interceptor.processPresence(presence);
-                }
-            }
-        };
     }
 
 
@@ -381,8 +383,6 @@ public class MultiUserChat {
                         );
         // @formatter:on
         connection.addStanzaListener(declinesListener, new AndFilter(fromRoomFilter, DECLINE_FILTER));
-        connection.addStanzaSendingListener(presenceInterceptor, new AndFilter(ToMatchesFilter.create(room),
-                        StanzaTypeFilter.PRESENCE));
         messageCollector = connection.createStanzaCollector(fromRoomGroupchatFilter);
 
         // Wait for a presence packet back from the server.
@@ -1158,8 +1158,13 @@ public class MultiUserChat {
      *
      * @param presenceInterceptor the new stanza interceptor that will intercept presence packets.
      */
-    public void addPresenceInterceptor(PresenceListener presenceInterceptor) {
-        presenceInterceptors.add(presenceInterceptor);
+    public void addPresenceInterceptor(Consumer<PresenceBuilder> presenceInterceptor) {
+        boolean added = presenceInterceptors.add(presenceInterceptor);
+        if (!added) return;
+        int currentCount = presenceInterceptorCount.incrementAndGet();
+        if (currentCount == 1) {
+            connection.addPresenceInterceptor(this.presenceInterceptor, ToMatchesFilter.create(room).asPredicate(Presence.class));
+        }
     }
 
     /**
@@ -1169,8 +1174,13 @@ public class MultiUserChat {
      *
      * @param presenceInterceptor the stanza interceptor to remove.
      */
-    public void removePresenceInterceptor(PresenceListener presenceInterceptor) {
-        presenceInterceptors.remove(presenceInterceptor);
+    public void removePresenceInterceptor(Consumer<PresenceBuilder> presenceInterceptor) {
+        boolean removed = presenceInterceptors.remove(presenceInterceptor);
+        if (!removed) return;
+        int currentCount = presenceInterceptorCount.decrementAndGet();
+        if (currentCount == 0) {
+            connection.removePresenceInterceptor(presenceInterceptor);
+        }
     }
 
     /**
@@ -2236,7 +2246,7 @@ public class MultiUserChat {
         connection.removeStanzaListener(presenceListener);
         connection.removeStanzaListener(subjectListener);
         connection.removeStanzaListener(declinesListener);
-        connection.removeStanzaSendingListener(presenceInterceptor);
+        connection.removePresenceInterceptor(presenceInterceptor);
         if (messageCollector != null) {
             messageCollector.cancel();
             messageCollector = null;

@@ -1076,7 +1076,6 @@ public class MultiUserChat {
      * @throws InterruptedException if the calling thread was interrupted.
      */
     public void inviteDirectly(EntityBareJid user) throws NotConnectedException, InterruptedException {
-        // TODO MF1 UUID?
         MessageBuilder messageBuilder = MessageBuilder.buildMessage(UUID.randomUUID().toString());
         messageBuilder.to(user);
 
